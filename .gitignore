@@ -1,0 +1,27 @@
+*.aux
+*.log
+*.bbl
+*.blg
+*.d
+*.fls
+*.make
+*.temp
+*.out
+*.cut
+*.toc
+*.xml
+*.cookie
+*.bcf
+*-eps-converted-to.pdf
+
+main-blx.bib
+
+# vim
+*.swp
+
+# mac
+.DS_Store
+
+*.pdf
+!figures/*.pdf
+!thesis-joqvist-final.pdf

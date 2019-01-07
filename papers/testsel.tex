@@ -1,0 +1,1236 @@
+\chapter{Extraction-Based Regression Test Selection}
+\label{ch:testsel}
+\paperRemark{\paperIIIref}
+
+{
+
+\newcommand{\todo}[1]{\footnote{\textbf{TODO:} #1}}
+
+\newcommand{\paratitle}[1]{\emph{\textbf{#1. }}}
+
+\newcommand{\setof}[1]{\ensuremath{\left \{ \mathit{ #1 }\right \}}}
+\newcommand{\tuple}[1]{\ensuremath{\left \langle \mathit{ #1 }\right \rangle }}
+\newcommand{\formal}[1]{\ensuremath{\mathit{ #1} }}
+
+\newcommand{\ourtool}{AutoRTS}
+%Usage: \ourtool{}
+
+\newfloat{algorithm}{t}{lop}
+
+\hyphenation{in-stru-men-ta-tion}
+
+\section*{Abstract}
+  Frequent regression testing is a core activity in agile software development, but large
+  test suites can lead to long test running times, hampering agility.  
+  By safe RTS (Regression Test Selection) techniques, a subset of the tests can be identified that cover all tests that can change result since the last run. To pay off in practice, the RTS overhead must be low. Most existing RTS techniques are based on dynamic coverage analysis, making the overhead related to the tests run. We present Extraction-Based RTS, a new safe RTS technique which uses a fast static analysis with very low overhead, related to the size of the modification rather than to the tests run.
+%  We
+%  present a method for reducing the test running time by selecting a safe
+%  subset to re-run, covering all tests that can change result since the last run.
+%  Our method uses a fast coarse-grained incremental static analysis that computes
+%  the extraction of each test program.
+  The method is suitable for program-driven testing, commonly used in agile development, where
+  each test is a piece of code that uses parts of the system under test.
+  We have implemented the method for Java, and benchmarked it on a number of
+  open source projects, showing that it pays off substantially in practice.
+  %For our subject programs, the test running time, including all overhead needed for the test selection, was reduced to between 40\% and 47\% on average.
+
+\section{Introduction}
+
+% Nyckelord: safe, regression, selection, unit test, java, program-driven tests, change-sensitive
+
+% RTS (Regression Test Selection):
+% RTS can be combined with test prioritization
+% RTS can be combined with continuous test running
+
+%GH: Tog bort "automatically" och "manually" igen. Kan bli missförstånd med att testerna körs manuellt.
+Frequent automated regression testing is an essential part of agile software development,
+whether it is done
+% automatically
+on a continuous integration server, or
+%manually
+by the developers as part of the development cycle \cite{beck1999embracing}.
+As a project grows, the time for running regression tests increases, which can hinder agile
+developement by increasing the development iteration time.
+
+%For instance, with long test running times, developers tend to delay running tests, making defect identification more difficult. Developers may also be forced to reduce the test suit and/or write fewer tests, with the risk of reducing testing throroughness.
+
+%in a number of ways:
+%
+%\begin{itemize}
+%  \item Test running may block other important tasks: a developer may be
+%    waiting for the test run to complete before continuing working.
+%  \item With long test running times, developers tend to delay running the tests, making defect identification more difficult, since defective code is fastest to identify immediately after the defect is introduced.
+%  \item With long test running times, developers may be forced to reduce the test suite and/or write fewer tests, with the risk of reducing testing thoroughness.
+%\end{itemize}
+
+During agile development, it is common to make use of automated \emph{program-driven testing}, where each test case is implemented as code, typically using \emph{xUnit}, i.e., a testing framework based on Beck's \emph{sUnit} framework for Smalltalk \cite{beck1994simple}. While the name xUnit alludes to unit testing at the class level, an xUnit test case can call any code, and can thus be used for testing at any granularity, including subsystem testing, integration testing, and complete system testing. Another commonly used approach to automated testing is to use \emph{input-driven testing}, where a program is run with different sets of input data, and where each data set corresponds to a test case.
+
+An agile developer typically writes the program-driven tests along with production code, and runs the complete test suite frequently. In the most extreme case, using the Test-Driven Development methodology, the developer runs the test suite after creating each new test, after completing each piece of new or changed functionality, and after each refactoring \cite{beck2003test}. It is thus of great importance to keep the test running time short, in order to reduce the work interruption of running tests.
+%GH: Removed this. To not give mixed message that running tests is not necessary.
+%Even if the developer does not run the tests they
+In addition, the tests are usually run regularly on a build server, where test runs consume valuable time and power.
+
+To reduce testing time, Regression Test Selection (RTS) methods can be used,
+selecting a subset of the test suite to re-run after a program modification. A
+multitude of RTS methods have been published, see, for example, the following
+surveys \cite{rothermel1996analyzing, biswas2011regression, yoo2012regression}. An RTS method is
+said to be \emph{safe} if it will run all tests that have changed result after
+a program modification, under certain conditions \cite{rothermel1996analyzing}. Running a safe RTS method
+is thus equivalent to running the complete test suite.  An RTS algorithm is more
+precise the fewer tests it runs in addition to the safe subset.
+
+To pay off, the overhead of running the RTS algorithm must be lower than the time it would take to run the tests not selected \cite{leung1991cost}.
+To achieve this, the right balance between precision and time spent on analysis should be found:
+a very precise analysis could be so slow that it does not make up for the time saved by the reduced testing time, thus defeating its purpose. To be useful in practice, it is not necessary that RTS pays off for each run, but it should pay off on the average. Additionally, to use RTS in agile development, it is desirable that the overhead is low enough to not be noticed for runs when the RTS does not pay off, for example when all tests are selected.
+% of the gained precision.
+%To use RTS for agile development, it is desirable that the RTS method not only pays off on the average, but also that the overhead is low enough to not be noticed in the case all tests are selected.
+
+%Most algorithms and tools for safe RTS are based on dynamic coverage analysis when running tests. This gives an overhead related to the number of tests run.
+
+In this paper, we present \emph{Extraction-Based RTS}, a new safe RTS method for program-driven testing. Our method is static, coarse-grained, and incremental, computing a dependency graph over code files, including both production files and test files. The dependency graph represents an \emph{extraction} of each test program, i.e., a subset of all program files, sufficient for running the test program. The dependency graph is incrementally updated after changes to the project. This makes the RTS overhead related to the size of the modification rather than to the project size or to the number of tests run. Most previous work is instead based on dynamic coverage analysis, giving an overhead related to the time for running the selected tests.
+
+Extraction-Based RTS is related to methods for computing program extractions, i.e., methods for
+reducing the code footprint for applications~\cite{agesen1994sifting,tip2002practical}. However,
+since one of our main goals is to have a low RTS overhead, we prioritize quick extraction
+computation over minimizing extraction size, so we have chosen to use a coarse-grained extraction
+algorithm.
+
+% coarse-grained -> fast
+% fine-grained -> slow
+
+%, that
+%can reduce testing time by selecting a
+%subset of tests to re-run after some change to the source code.
+%Our method is
+%\emph{safe}, meaning that it will run all tests that can change result since the last test run.
+%To pay off, the test selection algorithm must be faster than the time it would take to run the tests not selected \cite{leung1991cost}.
+%To accomplish this, we use a fast static coarse-grained analysis that computes a dependency graph over all source code in the program.
+%We store the dependency graph between test runs, so that the algorithm can be run incrementally after changes to the program code.
+%This way, the time for re-analysis depends on the size of the change rather than the size of the complete project.
+%GH: REMOVED this because how would this sharing be done when changes are merged? The depgraph file cannot be merged in a sensible way. We would need a solution for this, and discuss this further in the paper, if it should be mentioned here.
+%The graph can also be shared between developers to avoid redundant testing when collaborating on the same project.
+%The dependency graph represents an \emph{extraction} of each test program, i.e., a subset of all program files, sufficient for running the test program.
+%A
+%test will be re-run if any part of its extraction was changed since the last
+%test run. In contrast to earlier work on program extraction \cite{agesen1994sifting,tip2002practical}, which focuses on minimizing the code footprint for applications,
+%we use a very coarse-grained extraction algorithm, since our goal was to compute the extraction quickly.
+
+%Extraction-based test selection is similar to the method used by Infinitest\todo{referens}, a continuous test runner
+%which uses a slightly more coarse-grained analysis for test selection.
+
+To evaluate our new method, we have implemented a tool, \ourtool{}\footnote{\ourtool{} is available
+under an Open Source license at \url{https://bitbucket.org/joqvist/autorts}},
+%The real name and location are blinded due to the double-blind review, but will be disclosed for artifact evaluation and the final paper.
+that supports extraction-based RTS for Java projects with JUnit tests, and  measured its performance on several Open Source projects.
+% REMOVED COMMENT ON IMPLEMENTATION. NOT SO RELEVANT. DRAWING ATTENTION HERE COULD BE BAD FOR DOUBLE BLINDING.
+%The implementation is built as an extension to the extensible Java compiler
+%JastAddJ \cite{jastaddj}.  Extending JastAddJ provides easy access to source
+%analysis tools for Java.
+
+%Our RTS algorithm is fast due to using a simple static analysis, and working at the file level, i.e. it is very coarse-grained. Another tool that works at the file level is
+%%Other RTS tools that work at the file level include Infinitest \cite{infinitest}, a continuous test runner integrated with Eclipse and IntelliJ, and
+%the tool Ekstazi \cite{gligoric2015practical}, which is integrated with JUnit. See Section \ref{RelatedWork} for a detailed comparison.
+
+%We will start by illustrating how extraction-based RTS works on an example in Section~\ref{MotivatingExample}.
+Our main contributions are the following:
+
+\begin{itemize}
+  \item A new safe regression test selection method for program-driven testing, Extraction-Based RTS (Section \ref{Extraction})
+  \item An incremental reverse dependency algorithm that makes the RTS overhead scalable to large projects (Section~\ref{IncrementalUpdate}).
+  \item A concrete instantiation of the algorithm for Java (Section~\ref{JavaDeps}).
+  \item An open source tool, \ourtool{}, that implements Ex\-trac\-tion-based RTS for Java and JUnit (Section \ref{Tool}).
+  \item Evaluation of the method on open source Java projects, showing that the method pays off substantially in practice, and that the overhead is very low (Section \ref{Evaluation}).
+\end{itemize}
+
+Section \ref{RelatedWork} compares to related work, and Section \ref{Conclusion} provides a concluding discussion.
+
+\section{Extraction-Based Test Selection}
+\label{Extraction}
+
+We model a project (the system under test) as a set of \emph{code files}, $F$, of which a subset $T \subseteq F$ are \emph{test files}. The remaining files $P = F \setminus T$ are called \emph{production files}. Each test file $t \in T$ serves as a main program that needs a subset of $F$ for its execution, termed its \emph{minimal extraction}, $e_{min}(t)$.
+
+We assume that everything outside of $F$ that could affect the program behavior is stable, e.g., library code, data files, runtime system, operating system, etc. Reading data from the environment, like the current system time, can affect the control flow of a test, and while we allow this type of nondeterministic behavior we assume, for simplicity of presentation, that the test is not \emph{flaky}~\cite{luo2014empirical}, i.e., we assume that it is written so that it produces the same result regardless of the path taken. In the terminology of Rothermel and Harrold, the test is \emph{deterministically fault revealing}~\cite{rothermel1996analyzing}.
+Under these circumstances, a test $t$ will produce the same result for every run, given that no files in its minimal extraction, $e_{min}(t)$, are modified. Consequently, if only code files outside of the minimal extraction are modified, we do not need to rerun the test. Our method trivially generalizes to handle flaky tests too: there is no reason to rerun a flaky test if we know that its minimal extraction is unchanged.
+%\todo{Testing blaha assumption}
+
+Code files could be either in source code form, or in a processed form, like bytecode or binary object code. We will primarily consider the case of source code, but see~\ref{Shadowing} for a discussion of bytecode and binary code.
+
+Computing the minimal extraction is, in general, undecidable.\footnote{To know if a code line is executed requires knowing if the line is reachable, equivalent to the halting problem.} Instead, we compute the \emph{extraction} $e(t)$, a conservative approximation of the minimal extraction. I.e., $e_{min}(t) \subseteq e(t) \subseteq F$. Before giving the algorithm for computing extractions, we provide some examples.
+
+\subsection{Examples}
+\label{MotivatingExample}
+
+\begin{figure}
+  \centering
+\begin{adjustbox}{max width=\linewidth}
+\begin{tikzpicture}[
+		thick,
+    %>={Classical TikZ Rightarrow[angle=45:12pt, length=8pt, line width=1.3pt]},
+    >={Triangle[angle=45:6pt,length=8pt]},
+    box/.style={draw, fill=white!90!gray, font=\sffamily, inner sep=8pt},
+		rel/.style={midway, auto, font=\sffamily\itshape},
+		row 1/.style={minimum height=4em},
+		row 2/.style={minimum height=6.1em},
+		row 3/.style={minimum height=6.1em}
+  ]
+  \matrix[
+    text width=17ex,
+    row sep=4em,
+    column sep=4em]{
+    \node[box] (J) {interface \textbf{J}};
+		& \node[box] (E) {class \textbf{E}};
+		& \node[box] (D) {class \textbf{D}\\ D() \{ new B(); \}}; \\
+
+    \node[box] (A) {class \textbf{A} <: E,J\\~void m(B b) \{\}};
+		& \node[box] (B) {class \textbf{B} <: E\\~B() \{C.s();\}};
+		& \node[box] (C) {class \textbf{C}\\~static void s()\{\}\\~C() \{ new D();\}}; \\
+
+    \node[box] (T1) {class \textbf{T1}\\~void test1() \{\\~~new A();\\~\}};
+		& \node[box] (G) {class \textbf{G} <: A\\~void m(B b) \{\}};
+		& \node[box] (T2) {class \textbf{T2}\\~void test2() \{\\~~new B();\\~\}}; \\
+  };
+	\draw[->] (A)  to node[rel] {implements} (J);
+	\draw[->] (A.45)  to[out=90,in=-90,looseness=0.85] node[rel] {extends} (E.-150);
+	\draw[->] (B)  to node[rel,swap] {static} (C);
+	\draw[->] (B)  to node[rel] {extends} (E);
+	\draw[->] (C)  to node[rel,swap] {new} (D);
+	\draw[->] (D)  to[out=180,in=0,looseness=0.85] node[rel,swap,pos=0.6] {new} (B.20);
+	\draw[->] (G)  to[out=90,in=-90,looseness=0.85] node[rel,swap] {extends} (A.-45);
+	\draw[->] (T1) to node[rel] {new} (A);
+	\draw[->] (T2) to[out=90,in=-90,looseness=0.85] node[rel,swap] {new} (B.-45);
+\end{tikzpicture}
+\end{adjustbox}
+  \caption{An example project with files (boxes) and dependency edges (arrows with labels indicating reason for the edge). Note that there is no edge from \texttt{A} to \texttt{B} although \texttt{A} mentions \texttt{B} in its code: the file \texttt{B} is only needed for programs that create \texttt{B} objects, and thus have another dependency on \texttt{B}.}
+  \label{example}
+\end{figure}
+
+%In extraction-based RTS, the goal is to identify which test programs can be affected by a code modification. We do this in a conservative way by maintaining dependency edges between files, representing which code files each test file needs for its execution. The set of files that the execution of a given test program depends on is called its \emph{extraction}.
+
+The extraction is computed by maintaining dependency edges between files, representing which other files a given file needs for its execution. As we will see, a file \texttt{A} that mentions an entity in another file \texttt{B}, does not necessarily give rise to a dependency, which may at first seem counter-intuitive.   
+
+Figure~\ref{example} shows an example Java project with two test files, $\texttt{T1}, \texttt{T2}$,
+and seven production files, $\texttt{J}, \texttt{E}, \texttt{D}, \texttt{A}, \texttt{B}, \texttt{C}, \texttt{G}$. The notation \verb!X <: Y, Z! means that \texttt{X} is a subtype of \texttt{Y} and \texttt{Z}. The dependency edges are labelled to illustrate the different reasons for introducing them (\emph{extends}, \emph{implements}, \emph{static}, and \emph{new}).
+ 
+Consider the test case \texttt{T1}. Its extraction, i.e., the files needed to execute it, is its transitive closure with respect to the dependency graph:
+
+\begin{eqnarray}
+e(\texttt{T1}) = \{\texttt{T1}, \texttt{A}, \texttt{E}, \texttt{J}\} \nonumber
+\end{eqnarray}
+
+The type \texttt{A} is needed in the extraction since \texttt{T1} creates a new instance of it. The types \texttt{E} and \texttt{J} are needed since they are supertypes of \texttt{A}, and are thus needed to initialize the new \texttt{A} object.
+
+Note that although \texttt{A} refers to the type \texttt{B}, there is no edge from \texttt{A} to
+\texttt{B}. If \texttt{A.m(b)} is called with some \texttt{B}-object \texttt{b}, there must be a
+path from the main program to \texttt{B}, otherwise, it would not have been possible to create the
+\texttt{B} object. For \texttt{T1} there is no such path, and \texttt{B} is not needed for the
+execution~of~\texttt{T1}.
+
+Similarly, we can note that \texttt{A}'s subclass \texttt{G} is not part of \texttt{T1}'s extraction. Although \texttt{G} overrides \texttt{A}'s method \texttt{m}, that overriding method could only be invoked if there is an instance of \texttt{G} on the heap, in which case there must be a path from the main program to \texttt{G}.
+
+Now, consider test case \texttt{T2} with the following extraction:
+
+\begin{eqnarray}
+e(\texttt{T2}) = \{\texttt{T2}, \texttt{B}, \texttt{E}, \texttt{C}, \texttt{D}\} \nonumber
+\end{eqnarray}
+
+This example illustrates that static methods also need to be taken into account, and that there can be loops in the dependency graph.
+
+\texttt{T2} also illustrates a case of imprecision, i.e., where the extraction of a test will be greater than the minimal extraction: In running \texttt{T2}, the statement \texttt{new D()} will never be executed, and class \texttt{D} is not part of \texttt{T2}'s minimal extraction. Through a slower method-level analysis we would have been able to exclude \texttt{D}, but due to the fast coarse file-level analysis, we get this imprecision. A modification of \texttt{D} will thus result in our method selecting \texttt{T2}, although its execution result will be the same.
+
+
+\begin{figure}
+  \centering
+\begin{adjustbox}{max width=\linewidth}
+\begin{tikzpicture}[
+		thick,
+    %>={Classical TikZ Rightarrow[angle=45:12pt, length=8pt, line width=1.3pt]},
+    >={Triangle[angle=45:6pt,length=8pt]},
+    classrel/.style={color=gray, ->, >={Triangle[angle=45:14pt,length=10pt,open]}},
+    box/.style={draw,
+      fill=white!90!gray,
+      text depth=4em,
+      font=\sffamily,
+      inner sep=8pt,
+      text width=17ex},
+		rel/.style={midway, auto, font=\sffamily\itshape}
+  ]
+	\node[box] (L1) {class \textbf{L1}\\~void m1(L2 x) \{\\~~x.m2()\\~\}};
+	\node[box, right=3cm of L1] (L2) {class \textbf{L2}\\~void m2() \{\\~~...\\~\}};
+	\node[box, below=1.5cm of L1] (P) {class \textbf{P} <: L1};
+	\node[box, anchor=north east, below left=1.5cm and 0.2cm of L2.south] (Q) {class \textbf{Q} <: L2\\~void m2() \{\\~~...\\~\}};
+	\node[box, anchor=north west, below right=1.5cm and 0.2cm of L2.south] (R) {class \textbf{R} <: L2\\~void m2() \{\\~~...\\~\}};
+	\node[box, anchor=north] at($(P.south)!0.5!(Q.south)+(0,-1.5cm)$) (T3) {class \textbf{T3}\\~P p = new P();\\~Q q = new Q();\\~p.m1(q);};
+
+  \draw[classrel] (Q.north) -- +(0,0.4cm)-| (L2.south);
+  \draw[classrel] (R.north) -- +(0,0.4cm)-| (L2.south);
+  \draw[classrel] (P) to (L1);
+  \draw[->] (T3) to[out=90,in=-90] node[rel,swap,pos=0.6] {new} (P);
+  \draw[->] (T3) to[out=90,in=-90] node[rel,pos=0.6] {new} (Q);
+  \node (left) at ($(P.north west)!0.5!(L1.south west)-(1cm,0)$) {};
+  \node (right) at (left -| R.east) {};
+  \draw[dashed, color=gray] (left) -- (right);
+  \node[anchor=south west, font=\sffamily\itshape] at (left) {Library};
+  \node[anchor=north west, font=\sffamily\itshape] at (left) {Project files};
+\end{tikzpicture}
+\end{adjustbox}
+  \caption{The library does not need to be analyzed even if there are callbacks: it can only do
+  callbacks to entities that the test program is already dependent on. Grey arrows indicate inheritance.}
+  \label{libraryexample}
+\end{figure}
+
+\subsubsection*{Libraries}
+
+Recall that in our model, libraries are considered to be part of a stable environment that is not
+changed. Yet, there can be execution paths from the project code to a library, and back
+again via callbacks. How does this affect analysis and extractions? With our method, it is not
+necessary to analyze libraries, even if there are callbacks to the project code. The reason is that a
+library does (by definition) not know anything statically about the project code, and it can therefore only
+do callbacks to objects that the project code passes to it, and that the project code therefore already is dependent on.
+% so modifying a library, e.g., updating to a new version, would imply that test selection cannot be used, and all tests therefore have to be rerun.
+
+This is illustrated in Figure~\ref{libraryexample} where test case \texttt{T3} creates objects of
+subclasses to library classes, and calls the library method \texttt{m1} which in turn  calls
+another library method \texttt{m2} that is overridden in the project code (i.e., a callback). The
+callback to \texttt{m2} can go to \texttt{Q}'s \texttt{m2} method, which \texttt{T3} is already dependent on. However, there can be no callback to \texttt{R}'s \texttt{m2} method, since the \texttt{T3} program does not create any \texttt{R} objects.
+
+%No analysis of the library is needed to find out which project files are needed for running \texttt{T3}. For example, there is no path from \texttt{T3} to \texttt{R}, so there can be no \texttt{R}-objects created when executing \texttt{T3}.
+
+If anything that is part of the stable environment actually is modified, for example, if a library is updated to a new version, all tests are considered to be affected, and have to be rerun. It would be possible to improve this by including libraries, e.g., jar-files, as nodes in the dependency graph. By keeping track of which project files depend on a particular library, only test programs dependent on those files would need to be rerun when that library is updated. The library itself would still not need to be analyzed. 
+
+If a library has only made internal changes betweeen two specific versions, with no externally
+visible effect on the project code, then switching between either of those versions of the library
+can be ignored with respect to test selection.
+
+%As mentioned, we view the libraries as stable resources, so if any library is updated, all tests are considered to be affected. It would be possible to generalize this by including libraries, e.g., jar-files, as nodes in the dependency graph. The libraries would still not need to be internally analyzed, but it could be interesting to keep track of which project files depend on which libraries.  This could be advantageous if only some of the tests depend on a particular library. The test selection could then be effective also when the library is updated to a new version, and not only when project code files are modified.
+
+
+\subsection{Extractions}
+
+%We compute the extraction $e(t)$ for a test $t$ by a simple and fast static analysis of the code files.
+%% taking into account access to dependencies on both static and dynamic entities in other code files.
+% As we will see, it is not necessary to take into account all entities mentioned in the code files.
+
+
+%does not make use of any of the code files in $F$, neither through direct access nor via reflection.
+
+%We will now formalize the concept of extractions.
+To compute extractions, we construct a file dependency graph $G = \tuple{F,D}$ where the code files $F$ are the vertices, and the edges $D$ are file dependencies of the form $(f \rightarrow g)$. The extraction of a test $t$ is then simply the file $t$ and all files transitively reachable from $t$, i.e., the transitive closure of $t$:
+%. In other words, the extraction is the reflexive transitive closure of $t$, i.e.,  
+
+\begin{eqnarray}
+e(t) = \{t\} \cup \bigcup_{(t \rightarrow f)\in D} {e(f)} \nonumber
+\end{eqnarray}
+
+A dependency $(f \rightarrow g)$ means that the execution of code in $f$ directly depends on static code
+elements in $g$. Examples of this includes the access of static variables, calls to static methods,
+and calls to object initializers. As discussed in the examples, the mere mentioning of a type does
+\emph{not} induce a dependency. For example, if $f$ contains a method call \texttt{r.m()}, where
+\texttt{r} is a receiver of a type declared in $g$, this will \emph{not} induce a dependency $(f \rightarrow g)$. The reason is that at the time the call is made, the object \texttt{r} can only exist if there is another (transitive) dependency from the main program to $g$ (due to the code that created the object). In the context of a dynamically loading language, like Java, a dependency $(f \rightarrow g)$ means that execution of code in $f$ may cause code in $g$ to be dynamically loaded. We will discuss this in detail in Section~\ref{JavaDeps}.
+
+This way of treating dependencies is fundamentally different from many other methods for analyzing test dependencies, and relies on the fact that we trace dependencies from \emph{main programs} (test cases), and use the dependencies to compute \emph{extractions}, i.e., a subset of the total set of files that is guaranteed to include the files needed to run the program.
+Other code analyzing RTS methods, e.g., DejaVOO \cite{orso2004scaling}, work in a different way (see Section~\ref{RelatedWork}), and insert dependencies for all types used.
+
+As mentioned previously, the analysis needs only to take the code files $F$ in the project into
+account, and not the library code. This is because library code is (by definition) compile-time
+independent of the project, i.e., the library does not directly use static code elements in $F$.
+Note that this does not hinder the library to call code in $F$ indirectly, e.g., through callbacks
+on function pointers, or by calling virtual methods declared in the library but implemented in
+classes in $F$, since such calls do not induce dependencies.
+
+%Our analysis assumes that the library code is not compile-time dependent on $F$, i.e., that it does not directly access names in $F$. Note, however, that it is no problem for the library to do indirect calls to methods in $F$, for example using callbacks on function pointers, or by calling virtual methods declared in the library but implemented in classes in $F$.
+
+\newpage
+Our analysis works for introspective reflection, where only the state of the heap is inspected, since such code does not access static code elements. However, to handle general reflection, which may cause new code to be dynamically loaded at runtime, our method needs to be complemented, for example with manually added dependencies.
+
+We have chosen to build the dependency graph at the file level, to make the graph small and the
+analysis fast. Naturally, this gives imprecision as compared to finer-grained analysis on the class
+level, or on the method level. Since many files contain only a single class, we do not believe that
+class-based analysis would make a big difference in practice. Doing analysis at the method level
+would lead to a much more complex, and time-consuming, analysis that might not pay off, although future investigations in this direction would be interesting.
+
+\subsection{Building the dependency graph}
+
+Building the dependency graph at the file level allows each file to be analyzed locally. Assume we
+have a function $\textsc{GetDeps}(f)$ that analyzes a file $f$ and returns the set of other files it
+uses static code elements from (i.e., a local analysis of $f$). Building the graph from scratch for a project is then done by adding the local dependencies for each file to the graph, as shown in algorithm \textsc{BuildGraph}.
+
+\begin{algorithm}
+\caption{Build the complete dependency graph for a file set $F$}
+\begin{algorithmic}
+\Procedure{BuildGraph}{$F$}
+   \State $D\gets \varnothing$\Comment{Edge set $D$}
+   \ForAll {$f \in F$}
+      \State $G \gets \Call{GetDeps}{f}$
+      \State add $\{(f \rightarrow g) \mid g \in G\}$ to $D$
+   \EndFor
+   \State \textbf{return} $\tuple{F,D}$\Comment{The dependency graph}
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+
+
+%meaning that the file $f$ needs file $g$ for its execution
+
+\subsection{Selecting tests}
+\label{ReachedTests}
+To find the dependent tests after modifications to files, it is actually not the extraction sets that are interesting, but the reverse information, that we call \emph{reached tests}. The reached tests $r(f)$ of a file $f$ is the set of test cases that have $f$ in their extraction. I.e., 
+
+\begin{eqnarray}
+r(f) = \{t \in T | f \in e(t)\} \nonumber
+\end{eqnarray}
+
+For example, consider the project in Figure~\ref{example}. Here, the reached tests for \texttt{A} is $r(\texttt{A}) = \{\texttt{T1}\}$, and for \texttt{E} it is $r(\texttt{E}) = \{\texttt{T1}, \texttt{T2}\}$.
+
+After modifications to a subset $M \subseteq F$ of the code files, the selected tests $S \subseteq T$ is then simply the union of all the reached tests sets for all the modified files:
+
+\begin{eqnarray}
+S = \bigcup_{f \in M} {r(f)} \nonumber
+\end{eqnarray}
+
+This set of selected tests can be found by marking the modified files, recursively traversing the dependencies backwards from each marked file, marking all files found on the way, stopping the traversal at already marked files, and collecting the resulting marked test files, as shown in the  algorithm \textsc{SelectTests}.
+%(The dependency graph is computed prior to the file modification.)
+
+\begin{algorithm}
+\caption{Compute the set of tests to select, given the dependency graph $\tuple{F,D}$, the set of modified files $M \in F$, added files $A \notin F$, deleted files $X \in F$, and test files $T \in (F \cup A)$. }\label{select}
+\begin{algorithmic}
+\Procedure{SelectTests}{$\tuple{F,D}, M, A, X, T$}
+   \State $S\gets \varnothing$\Comment{Selected tests $S$}
+   \State unmark all files in $F$
+   \ForAll {$m \in M$}
+      \State $\Call{SelectReached}{m}$
+   \EndFor
+   \State add $A \cap T$ to $S$ \Comment{Select new tests}
+   \State \textbf{return} $S$ \Comment{Return the selected tests}
+   \State
+   \State \textbf{where}
+   \Procedure{SelectReached}{g}
+      \If {$g$ is not marked}
+        \State mark $g$
+        \If {$g \in T$}
+            \State add $g$ to $S$ \Comment{Select reached test}
+        \EndIf
+        \ForAll { $f$ such that $(f \rightarrow g) \in D$ }
+          \State $\Call{SelectReached}{f}$
+        \EndFor
+      \EndIf
+   \EndProcedure
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+
+\newpage
+\section{Updating the dependency graph}
+\label{IncrementalUpdate}
+
+After modifications and rerunning of the selected tests, the dependency graph needs to be updated.
+Instead of recomputing it from scratch, it can be updated incrementally by removing the outgoing dependencies from each modified file, reanalyzing those files, and adding the dependencies corresponding to the new content of the files.
+For added files the corresponding node needs to be added together with outgoing dependencies.
+For deleted files the corresponding node is removed from the dependency graph. The algorithm \textsc{UpdateGraph} describes how to update the graph.
+
+\begin{algorithm}
+\caption{Update the dependency graph $\tuple{F,D}$, given a set of modified files $M$, added files $A$, and deleted files $X$.}
+\begin{algorithmic}
+\Procedure{UpdateGraph}{$\tuple{F,D}, M, A, X$}
+   \State add $A$ to $F$
+   \ForAll {$f \in (M \cup X$)} \Comment{Remove outdated edges}
+      \State remove all edges $(f \rightarrow ...)$ from $D$ 
+   \EndFor
+   \State remove $X$ from $F$
+   \ForAll {$f \in (M \cup A$)} \Comment{Add new edges}
+      \State $G \gets \Call{GetDeps}{f}$
+      \State add $\{(f \rightarrow g) \mid g \in G\}$ to $D$
+   \EndFor
+   \State \textbf{return} $\tuple{F,D}$\Comment{The updated dependency graph}
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+
+
+If the analysis is done at the source level, additional files might need to be analyzed, because due to name shadowing, a modification may change the meaning of names in other files. We discuss this for Java in Section~\ref{Shadowing}.
+
+Note that extraction-based RTS is not dependent on having to build and run all the tests in order to
+do the first test selection. A user can thus check out a project, run the batch analysis to get the
+first dependency graph for the code, do modifications, then run the incremental analysis to select
+and run affected tests. Running the batch analysis is typically faster than running all tests. Other test selection methods that rely on running instrumented tests cannot avoid the initial run. Avoiding the initial test run can be an important advantage, allowing developers to quickly start to work after checking out a project. Furthermore, avoiding instrumented tests speeds up testing altogether.
+
+%\subsection{Dependency graph representation}
+
+% REMOVED - THIS IS ALREADY EXPLAINED EARLIER
+%The dependency graph is represented as a directed graph $G = (N, E)$, where
+%where $N$ is the set of nodes and $E$ are the edges in the graph. Each edge $e$
+%has a source node $n_s$ and a target node $n_t$, i.e. $e = (n_s, n_t)$ means
+%that the node $n_s$ depends on $n_t$. Each node in the dependency graph
+%represents a Java type (class, enum, interface).
+
+% REMOVED - THIS NEEDS TO BE EXPLAINED BETTER IF IT SHOULD BE INCLUDED, AND IN THAT CASE MOVED TO THE TOOL SECTION.
+%In addition to the dependency graph a helper graph keeps track of source packages, source files, and
+%test methods. Source files are used to map to files in a file system, and help link Java types to those files.
+%Test methods are used to keep track of how many tests exist in each test class, and they are used to determine which
+%tests should be re-run (if the enclosing type depends transitively on something that has been modified).
+%Source packages need to be tracked in order know which files should be re-parsed after changes that could re-bind
+%package level name bindings.
+
+% Source package is needed when a file is added or deleted in a package, then all files in that package need to be reparsed because names in them could change binding.  
+
+\section{Dependencies for Java}
+\label{JavaDeps}
+
+As a concrete example of extraction-based RTS, we will consider the Java language. Please refer back to Figure~\ref{example} for illustration of the different cases.
+
+When running a Java program, the main program is loaded and executed, and additional code modules are loaded on demand, depending on the executed code. The constructs that lead to code loading are \emph{extends}, \emph{implements}, \emph{static}, and \emph{new}:
+
+\begin{itemize}
+  \item \emph{Extends.}\hspace{0.2cm} If a class \texttt{A} extends another
+    class \texttt{E}, running the code for instantiating \texttt{A} will cause
+    the loading of \texttt{E}. The code of \texttt{E} is needed both for
+    initializing the new \texttt{A} object with any fields declared in \texttt{E}, for
+    initializing any static fields in \texttt{E}, and for allowing methods in \texttt{E} to be
+    called on \texttt{A} objects. We therefore add a dependency from the file containing
+    \texttt{A} to the file containing \texttt{E}.
+  \item \emph{Implements.}\hspace{0.2cm} If a class \texttt{A} implements an interface \texttt{J}, running the code for instantiating \texttt{A} will cause the loading of \texttt{J}. The code for \texttt{J} is needed both for initialization of static fields in \texttt{J}, and, since Java 8, to allow calls to default methods in \texttt{J}. We therefore add a dependency from the file containing \texttt{A} to the file containing \texttt{J}. 
+  \item \emph{Static.}\hspace{0.2cm} If there is code accessing a static field or calling a static method of a class or interface \texttt{T}, running that code will cause loading of \texttt{T}, to be able to access the field, or call the method. We therefore add a dependency from the file containing that code to the file containing \texttt{T}.
+  \item \emph{New.}\hspace{0.2cm} If there is code that instantiates a class \texttt{C}, using the
+    \texttt{new} construct, this will cause loading of \texttt{C}. The code for \texttt{C} is needed for instantiating the new \texttt{C} object, and for allowing access to its methods or fields. We therefore add a dependency from the file containing the \texttt{new} construct to the file containing \texttt{C}.
+\end{itemize}
+
+Based on these observations, the function $\textsc{GetDep}(f)$ (used in \textsc{BuildGraph} and \textsc{UpdateGraph}) is implemented simply by traversing the file, and computing the accessed files in the \emph{extends}, \emph{implements}, \emph{static}, and \emph{new} constructs. 
+
+A key observation is that the mere reference of a type in the code, for example in a method signature, does not cause that type to be loaded. For example, consider the example in Figure~\ref{example} again, where class \texttt{A} contains a method \texttt{m} which takes an argument of type \texttt{B}. Neither loading of the bytecode of \texttt{A}, nor calling its method \texttt{m} will trigger any loading of \texttt{B}. The code for \texttt{B} is not needed until methods on \texttt{B} are called, and at that point in time, the code for \texttt{B} must already have been loaded in order to create the \texttt{B} object. Thus, we do not need to include any dependency from \texttt{A} to \texttt{B}: any program that will call \texttt{m} with a \texttt{B} object argument, will have another dependency on \texttt{B}.
+
+%For example, if a class \texttt{C} has a method \texttt{m} with an argument of type \texttt{T}, loading of \texttt{C} does not imply loading of \texttt{T}. The code for \texttt{T} is not needed until the method \texttt{m} is called with an object of type \texttt{T} as its argument, and since the \texttt{T} object has then already been created, the code for \texttt{T} must at that point already have been loaded. Thus, we do not need to include any dependency from \texttt{C} to \texttt{T}: any program that will call \texttt{m} with a \texttt{T} object argument, will have another dependency on \texttt{T}.
+
+%As mentioned earlier, this model does not cover dependencies due to general reflection, where classes are accessed without static type information in the code. Such uses of reflection could in the worst case access all other types in the project.
+
+
+\subsection{Source versus bytecode analysis}
+\label{Shadowing}
+Extraction-Based test selection is a general technique that can be applied by analyzing source code as well as compiled formats of the code, e.g., bytecode or binary code.
+If the analysis is done on source code rather than on bytecode, adding or deleting a type may cause type accesses in other types in the same package to change meaning. Consider the example in Figure~\ref{shadow}.
+Here, class \texttt{A} in package \texttt{p} has a wildcard import to a package \texttt{q}, and accesses a class \texttt{B}. In version 1, this access is bound to \texttt{q.B}. However, in version 2, a new class \texttt{B} is added to the package \texttt{p}. This class will shadow \texttt{q.B}, causing the \texttt{B} access to be bound to \texttt{p.B}, and thereby change the meaning of the code in \texttt{A}. The test \texttt{T} that depends on \texttt{A} will thus need to be rerun if \texttt{p.B} is added.
+
+Such changes of the semantics, due to adding or removing types, can only occur
+within a package in Java. This is because Java does not allow accessing a type
+via a wildcard import if there is another wildcard import that would also match
+the access.
+Thus, in version 1, adding a class \texttt{B} to package \texttt{r} would cause a
+compile-time error for class \texttt{A}.
+For this reason, if a type is added or deleted from a package, it is sufficient to recompute the dependencies for all the files in that package.
+
+An analysis at the bytecode level does not have this issue, since the bytecode only contains fully qualified type names, and no wildcard imports.
+
+\begin{figure}
+  \centering
+\begin{adjustbox}{max width=\linewidth}
+\begin{tikzpicture}[
+		thick,
+    %>={Classical TikZ Rightarrow[angle=45:12pt, length=8pt, line width=1.3pt]},
+    >={Triangle[angle=45:6pt,length=8pt]},
+    flabel/.style={anchor=south west, xshift=-4ex, font=\sffamily\itshape},
+    box/.style={draw,
+      fill=white!90!gray,
+      text depth=4em,
+      font=\sffamily,
+      inner sep=8pt,
+      text width=17ex},
+		rel/.style={midway, auto, font=\sffamily\itshape}
+  ]
+	\node[box, text depth=2em] (B1) {package q;\\class \textbf{B}};
+	\node[box, text depth=2em, right=1.5cm of B1] (B2) {package q;\\class \textbf{B}};
+	\node[box, below=of B1, text depth=8em] (A1) {%
+    package p;\\
+    import q.*;\\
+    import r.*;\\
+    class \textbf{A}\\
+    ~A() \{\\
+    ~~new B();\\
+    ~\}};
+	\node[box, right=1.5cm of A1, text depth=8em] (A2) {%
+    package p;\\
+    import q.*;\\
+    import r.*;\\
+    class \textbf{A}\\
+    ~A() \{\\
+    ~~new B();\\
+    ~\}};
+  \node[box, right=of A2] (pB) {%
+    package p;\\
+    class \textbf{B}
+    \\~...};
+  \node[box, below=of A1] (T1) {%
+    class \textbf{T}\\
+    ~void test() \{\\
+    ~~new p.A();\\
+    \}};
+  \node[box, below=of A2] (T2) {%
+    class \textbf{T}\\
+    ~void test() \{\\
+    ~~new p.A();\\
+    \}};
+  \node[flabel] at(B1.north west) {file q.B};
+  \node[flabel] at(B2.north west) {file q.B};
+  \node[flabel] at(A1.north west) {file p.A};
+  \node[flabel] at(A2.north west) {file p.A};
+  \node[flabel] at(T1.north west) {file T};
+  \node[flabel] at(T2.north west) {file T};
+  \node[flabel] at(pB.north west) {new file p.B};
+
+  \node[below=0.5cm of T1, font=\sffamily\Large] (V1) {Version 1};
+  \node[below=0.5cm of T2, font=\sffamily\Large] (V2) {Version 2};
+
+  \node (top) at ($(B1.north east)!0.5!(B2.north west)$) {};
+  \node (bot) at ($(V1.south east)!0.5!(V2.south west)$) {};
+
+  \draw[color=gray,dashed] (bot) -- (top);
+
+  \draw[->] (A1) to (B1);
+  \draw[->] (T1) to (A1);
+  \draw[->] (T2) to (A2);
+  \draw[->] (A2) to (pB);
+\end{tikzpicture}
+\end{adjustbox}
+  \caption{In version 1, \texttt{A}'s access \texttt{new(B)} is bound to \texttt{q.B}. In version 2, the file \texttt{p.B} has been added. This causes the access \texttt{new(B)} to change meaning because of shadowing, binding it to \texttt{p.B}.}
+  \label{shadow}
+\end{figure}
+
+In our tool, \ourtool{}, we have chosen to implement the method at the source level. While the
+implementation is slightly more involved due to handling shadowing, it has the advantage that it is not necessary to compile the complete project in order to do the test selection. 
+
+For a language like C, the technique could be used on the binary object code. The dependency analysis could then be done on the symbols referenced between different object files, i.e., in principle corresponding to the work a static linker like \texttt{ld} does.
+
+\newpage
+To find out which source files are modified after a change, the file system can be scanned for files with new timestamps, which is very fast.
+A tool working at the bytecode or binary level could also use timestamps provided that an incremental compiler is used that does not update the files unnecessarily.
+For a batch compiler that updates all files, a file differencing technique would need to be used,
+for example computing a sufficiently long hash code and comparing to the hash code for the previously analyzed file.
+Our method could be made more precise by using semantic differencing between files to only detect modifications that had a semantic effect. This would
+increase the modification checking time, but the extra precision might make it worthwhile. The Java bytecode format itself is resilient to some non-semantic
+changes such as indentation and comments. Implementation using bytecode analysis would be interesting future work.
+
+%As mentioned in the previous section, the mere reference to a type does not lead to a dependency. For example, the file \texttt{A} is \emph{not} dependent on file \texttt{B}, although it has a method \texttt{m} that takes an argument of type \texttt{B}. The reason is that if \texttt{m} will ever be executed, passing it an object of type \texttt{B}, that  \texttt{B} object will need to have been created by some previously executed code, which will then have a dependency on \texttt{B}. Other RTS methods, e.g., \cite{orso2004scaling} use class-based dependency graphs based on the types used, and our graph can thus be more precise than such graphs.
+
+%A test file typically contain several test cases, each implemented as a method. Due to the coarse file-level dependencies, running a test means running all the test case methods in a test file. A finer granularity, and higher precision, can be obtained by refactoring a test class T with test case methods m1, m2, ... mk into one subclass for each test method, see Figure XXX, or to adapt the method accordingly.\todo{Explain this better, and make a figure.}
+
+%NOT DEPENDENT ON RUNNING THE TESTS TO DO RTS
+%\subsubsection*{Initial run of all tests not needed}
+
+%NOT DEPENDENT ON COMPILING THE TESTS TO DO RTS
+%BYTECODE VS SOURCECODE
+%GENERALITY, APPLICATION TO OTHER LANGUAGES
+
+%In doing the analysis at the source level for Java, additions and deletions of files may affect name bindings in the same package. For this reason, we recompute the dependencies for all files in a package whenever a file in the package has been added or removed. Doing the analysis on the bytecode class files could be quicker, since all type names are already resolved in the bytecode. If an incremental compiler is used, the same simple timestamp analysis could be done to identify modified class files.
+
+
+
+%\todo{Is there any particular advantage we can point out of being able to do the test selection on code that is not compiled?}
+%In this paper, we have discussed the details of how to do extraction-based test selection analysis for Java, making use of the principles of class loading. For languages like C, the technique could be used on the binary object code. For C, the dependency analysis could be done on the symbols referenced between different object files, i.e., in principle corresponding to the work a static linker like \texttt{ld} does.
+
+%LIBRARIES
+
+%FINER / COARSER GRAIN (PACKAGE-LEVEL, METHOD LEVEL)
+
+\section{Tool implementation}
+\label{Tool}
+
+\begin{figure}
+  \centering
+\begin{adjustbox}{max width=\linewidth}
+{
+\def\drawdoc#1{%
+  \draw[black, fill=brown!35!white]
+      (#1.north west) --
+      ($(#1.north east) - (6pt,0)$) --
+      ($(#1.north east) - (0,6pt)$) --
+      (#1.south east) --
+      (#1.south west) --
+      cycle;}
+% https://tex.stackexchange.com/questions/87454/tikz-purely-vertical-arrow-from-nodea-south-to-nodeb-north
+\begin{tikzpicture}[
+    thick,
+    >={Triangle[angle=45:6pt,length=8pt]},
+    flabel/.style={anchor=south west, xshift=-4ex, font=\sffamily\itshape},
+    *|/.style={
+        to path={
+          (\tikztostart)
+          --
+          (perpendicular cs: horizontal line through={(\tikztotarget)},
+                                 vertical line through={(\tikztostart)})
+          \tikztonodes
+        }
+    },
+    doc/.style={
+      outer sep=0,
+      inner sep=0,
+      minimum width=8ex,
+      minimum height=13ex},
+    box/.style={
+      draw,
+      fill=white!90!gray,
+      font=\sffamily,
+      inner sep=8pt,
+      text width=19ex,
+      text centered},
+    rel/.style={midway, auto, font=\sffamily}
+  ]
+  \node[box] (runner) {TestRunner\\(5)};
+  \node[box, below=2em of runner] (sel) {TestSelector\\(4)};
+  \node[box, below=2em of sel, xshift=3em] (graph) {DependencyGraph\\(4)};
+  \node[box, below=2em of graph, xshift=2em, text width=14ex] (anal) {CodeAnalyzer\\(3,6)};
+  \node at (sel |- anal.south) (bot) {};
+  \node[box, below=2em of bot] (track) {ChangeTracker\\(2)};
+
+  \node[doc, right=1.7cm of graph] (json) {};
+  \node[doc, left=5cm of graph.north west] (s1) {};
+  \node[doc, left=5cm of graph.north west, shift={(2.2ex,-2.2ex)}] (s2) {};
+  \node[doc, left=5cm of graph.north west, shift={(4.4ex,-4.4ex)}] (s3) {};
+  \node[doc, left=5cm of graph.north west, shift={(6.6ex,-6.6ex)}] (s4) {};
+
+  \drawdoc{json}
+  \drawdoc{s1}
+  \drawdoc{s2}
+  \drawdoc{s3}
+  \drawdoc{s4}
+
+  \node[above=0.3cm of s1, font=\sffamily] {source files};
+  \node[below=0.9cm of s2, font=\sffamily] (dir) {directories};
+  \node[below=0.3cm of json, font=\sffamily, text width=4em, text centered] {graph\\in JSON};
+
+  \node[draw, color=gray, dashed,
+    fit = (runner) (sel) (graph) (anal) (track),
+    inner sep=1.5em
+    ] (surround) {};
+
+  \node at (surround.north west) [anchor=south west, font=\sffamily\Large] {AutoRTS};
+
+  \draw[->] (sel) to (runner);
+  \draw[->] (graph.north) to[*|] (sel.south);
+  \draw[->] (anal.north) to[*|] (graph.south);
+  \draw[->] (track.147) to[*|] (sel.south);
+  \draw[->] (track.35) to[*|] (anal.south);
+  \draw[->] (graph.215) to[*|] (track.north);
+  \draw[->, shorten <=0.2cm, shorten >=0.3cm] (dir) to (track.west);
+  \draw[->, dashed, shorten >=0.5cm] (runner.west) to node[rel, swap, text width=5em, pos=0.4] {run selected\\tests} (s2);
+  \draw[<->] (graph) to (json);
+\end{tikzpicture}
+}
+\end{adjustbox}
+  \caption{The \ourtool{} tool. Solid arrows indicate information flow.}
+  \label{tool}
+\end{figure}
+
+We have implemented a standalone tool, \ourtool{}, that supports extraction-based test selection for Java and JUnit, using analysis on the source code. Instead of running the complete test suite using JUnit, the user runs \ourtool{} which selects a safe subset of the tests and runs them using JUnit. Figure~\ref{tool} shows the different parts of the tool, and how they interact with the file system.
+
+\begin{enumerate}
+\item The \emph{dependency graph} is stored in a JSON file between runs of \ourtool{}.
+\item The \emph{change tracker} scans the source directories to identify modified, added and deleted
+  source files since the last test run, by comparing file time stamps to those stored in the dependency graph.
+\item The \emph{code analyzer} parses changed or added files, collecting outgoing dependencies, and
+  identifying if the file contains JUnit tests.
+\item The \emph{test selector} selects tests to run, based on the changed files and the dependency graph.
+\item The \emph{test runner} runs the selected tests.
+\item The \emph{code analyzer} analyzes the changed files to update the dependency graph to be ready for the next run of \ourtool{}.
+\end{enumerate}
+
+The code analyzer is implemented as an extension to the extensible Java compiler ExtendJ
+\cite{jastaddj,oqvist2013extending}\footnote{ExtendJ was previously named JastAddJ.}. The parsing, abstract syntax tree construction, and type lookup is reused from ExtendJ, and extended with dependency analysis, as explained in Section~\ref{JavaDeps}.
+
+%JESPER: IT SHOULD BE POSSIBLE TO PARSE THE FILES AND UPDATE THE DEP GRAPH *AFTER* RUNNING THE TESTS??? THEN THAT TIME WOULDN'T NEED TO BE INCLUDED IN RUNNING THE TEST SELECTION, BECAUSE IT WOULD NOT DELAY THE TEST RESULTS! WE SHOULD STILL REPORT HOW LARGE IT IS, OF COURSE.
+
+%Gorel: We have to always parse the modified files in case new tests were added due to modifications. The only case where you can skip parsing is when files are only removed.
+
+%MIGHT COMMENT THAT THE LAST PHASE COULD BE DONE AFTER THE RESULTS ARE REPORTED.
+%MIGHT COMMENT THAT THE PARSING OF THE CHANGED FILES COULD BE DONE AFTER RUNNING THE SELECTED TESTS, IF THERE WAS ANOTHER WAY OF IDENTIFYING WHICH FILES ARE JUNIT FILES.
+
+\section{Evaluation}
+\label{Evaluation}
+
+To evaluate the effectiveness of Extraction-Based RTS we have conducted an empirical study
+attempting to simulate Java application development, by replaying the commit histories
+of five Open Source Java projects and using \ourtool{} to perform test selection.
+
+In the following sections we describe the research questions addressed in the study, objects of
+study, variables, threats to validity, experiment process, and results and analysis.
+
+\subsection{Research Questions}
+
+To help us investigate how efficient Extraction-Based RTS is for Java applications, we posed the
+following research questions for our empirical study:
+
+\begin{itemize}
+  \item \emph{How does using our RTS technique compare to running all tests for a Java application?}
+  \item \emph{How large is the overhead for using \ourtool{} on real-world Java projects?}
+\end{itemize}
+
+\subsection{Objects of Study}
+\label{ObjectsOfStudy}
+
+For our experiment we selected five Java applications ranging in size from 20-254K lines of code.
+The applications we selected are:
+Apache Commons Lang 3.0 (ACLang),
+Closure Compiler,
+Functor,
+Jaxen,
+and JUnit.\footnote{
+git://git.apache.org/commons-lang.git \\
+https://github.com/google/closure-compiler \\
+https://github.com/apache/commons-functor \\
+https://svn.codehaus.org/jaxen/trunk/jaxen/ \\
+https://github.com/junit-team/junit \\
+}
+Each of the selected projects
+has a public repository with a long history of commits that we could replay to simulate
+development.  Table~\ref{tbl:locs} shows some metrics for
+the projects.
+
+The projects we selected are well-known in the Open Source community, and in particular JUnit could
+be expected to use a rigorous unit testing methodology for development.  We found that testing
+regimes vary between projects and can even change significantly during the commit history of a
+single project.
+
+\begin{table}[h]
+  \centering
+\begin{tabular}{l|r|r|r|r}
+  \emph{Project} & \emph{SLOC} & $|P|$ & $|T|$ & \emph{Revision} \\
+  \hline
+  ACLang & 65K & 280 & 122 & e1ad4b1 \\
+  %  GIT e1ad4b118f8f243022b97ba935015cbf6efea9bd
+  %  (git://git.apache.org/commons-lang.git) (65611)
+  Closure & 254K & 706 & 271 & 8edc042 \\
+  %  GIT 8edc042cf752dbf23dec3bdbb4ba37352d6adf7d
+  % (https://github.com/google/closure-compiler) (131284 source + 123504 test lines = 254788)
+  Functor & 21K & 226 & 170 & 3da1a4b \\
+  %  GIT 3da1a4b1214428c04ca9102ef4567ba61b0ff5be
+  %  (https://github.com/apache/commons-functor) (21639 + 49 = 21688)
+  Jaxen & 20K & 300 & 77 & 1405 \\
+  %  SVN
+  %  (https://svn.codehaus.org/jaxen/trunk/jaxen/) (20345)
+  JUnit & 26K & 394 & 152 & 47707e8 \\
+  %  GIT 47707e8d86ad0927f6c67472615646949d313ab3
+  %  (https://github.com/junit-team/junit) (26309)
+  \hline
+\end{tabular}
+\caption{Sizes for the last version measured on each benchmarked project.
+\emph{SLOC} is the number of source lines of code,
+excluding whitespace and comments for all files (both production and test code),
+measured using the tool \emph{cloc}.
+$|P|$ is the number of production files.
+$|T|$ is the number of test files.
+\emph{Revision} is the Git commit hash or Svn Revision number for the last version measured.}
+\label{tbl:locs}
+\end{table}
+
+\subsection{Variables}
+
+The test selection technique measured is an independent variable of the empirical study. We measured
+two different test selection techniques: \emph{Select-All}, and Extraction-Based RTS.  Select-All
+runs all tests without any analysis, while Extraction-Based RTS is performed using \ourtool{} which
+first analyzes the source code and then selects a subset of tests to execute.
+
+The total running time for each test selection technique is a dependent variable.
+
+\subsection{Threats to Validity}
+
+External threats to validity include our choice of Java projects to study and the commits measured.
+We tried to avoid bias and selected well-known and easily available projects with JUnit tests and at
+least 500 commits in the commit history.  We did not change the selection or measured commits based
+on how Extraction-Based RTS performed on the selected projects.
+
+The size and number of projects measured limits the general applicability of our results.
+Given that Java coding styles and program architecture can vary greatly between projects, our
+results should be regarded only as informative examples. To draw more general conclusions, a larger
+study would be needed.
+
+Internal threats to validity include possible bugs in our implementation. To mitigate this risk, we
+wrote tests for our tool during implementation of the analysis, we also checked that our tool
+detected all available tests for a subset of the commits we measured.  Furthermore, the extensible
+compiler ExtendJ, that \ourtool{} builds on, has its own large test set helping to ensure the
+Java source analysis works well.
+  
+\subsection{Experiment Process}
+
+We simulated development on each of the selected Java projects by using the commit log to replay
+commits in chronological order. For each project a series of commits were checked out in order, and
+for each commit we measured the total testing time using Select-All and \ourtool{}.  When using
+\ourtool{} the analysis was based on the changes introduced in the current commit.  We recorded
+statistics about the test selection, such as the time spent running selected tests, how long it took
+to analyze dependencies and update the dependency graph for each commit, and how long time it took
+to run all available tests.
+
+Commits that failed to compile or did not change any source files were skipped during the experiment
+process.  Compilation failures were caused by, e.g., missing libraries, dependencies on old Java
+versions, and changes to source folder locations.  Each of the benchmark projects has changed build
+system, source folder locations, and library dependencies multiple times over the course of their
+development.  We could not account for every such change, but we tried to fix build errors
+where possible.  The number of skipped commits, due to errors or lack of source changes, is listed
+per project in Table~\ref{tbl:commits}.
+
+% NB: subtracted errors from no changes
+% TODO: updatera ACLang!
+\begin{table}[h]
+  \centering
+\begin{tabular}{l|r|r|r|r}
+   &\multicolumn{1}{c|}{Total} & \multicolumn{1}{c|}{Compile} &  &  \\
+  Project & \multicolumn{1}{c|}{commits} & \multicolumn{1}{c|}{errors} & No changes & Measured \\
+  \hline
+  ACLang & 1524 &    44 &  364 &    1116 \\
+ Closure & 1500 &   131 &  307 &    1062 \\
+ Functor &  819 &   116 &  155 &     548 \\
+   Jaxen & 1009 &    92 &  196 &     721 \\
+   JUnit & 1314 &    28 &  336 &     950 \\
+  \hline
+\end{tabular}
+\caption{Classification of commits used. Commits with compile errors and commits where
+no source files were changed were excluded from the measurements.}
+\label{tbl:commits}
+\end{table}
+
+%%%% Raw data
+%   project total errors nomod measured
+% 1  ACLang  1524     44   364     1116
+% 2 Closure  1500    131   307     1062
+% 3 Functor   819    116   155      548
+% 4   Jaxen  1009     92   196      721
+% 5   JUnit  1314     28   336      950
+
+\newpage
+\subsection{Benchmark Environment}
+
+All measurements were taken on a 4-core 3.6GHz Intel i7-3820 CPU, with 64 GiB
+RAM, running Linux Mint 17.0.
+
+To compile the benchmark projects the following Java versions were used:
+
+\begin{itemize}
+  \item Java SE2 1.4 (Sun Java \verb'1.4.2_19-b04')
+  \item Java 7 (Oracle Java \verb'1.7.0_45-b18')
+  \item Java 8 (Oracle Java \verb'1.8.0_71-b15')
+\end{itemize}
+
+\subsection{Results and Analysis}
+
+Figure \ref{fig:bins} shows mean execution times for groups of 20 consecutive commits for each Java
+project.  In each figure, the dots show the mean Select-All running time, and the stacked bars
+illustrate the \ourtool{} running time, where the upper green bar represents test running time, and
+the lower grey bar represents the analysis time.  The analysis time includes time spent to identify
+modified, added, and deleted files, and it includes time spent selecting which tests to run
+(algorithm \textsc{SelectTests}), and the time used to update the dependency graph for the project
+(algorithm \textsc{UpdateGraph}).
+
+The test running time using \ourtool{} is lower than running all tests with Select-All, on average,
+for ACLang and JUnit. For Functor and Jaxen the mean \ourtool{} running time drops below the
+Select-All running time in the later parts of their commit histories. Closure is the only project
+where the Select-All running time remains slightly lower than \ourtool{} (8\% lower for the last 40
+commits) during the entire measured commit history.
+
+\begin{figure*}
+  \centering
+  \def\svgwidth{\textwidth}
+  \input{figures/combinedbins.pdf_tex}
+  \caption{Testing time, means for bins of 20 commits. Test selection pays off when the red dot is
+  above the stacked bars.}
+  \label{fig:bins}
+\end{figure*}
+
+For all projects except Closure, if testing time continues to be similar to the latest commits,
+using \ourtool{} would save time for continued development. If testing and analysis times continue
+to follow a similar trend the gap would widen for future commits.  To summarize the results for the
+most recent commits from each project, Table \ref{tbl:averages} shows the \ourtool{} analysis and
+test running time as a percentage of Select-All time for the last 40 measured commits in each
+project.  For the last 40 commits, average total testing time is reduced by by 37-87\% for all
+projects except Closure, and increased by 8\% for Closure. We thus conclude that Extraction-Based
+RTS pays off for ACLang, Functor, Jaxen, and JUnit.
+
+\begin{table}[h]
+  \centering
+\begin{tabular}{l|r|r|r}
+  \emph{Project} & \emph{Analysis (\%)} & \emph{Run Tests (\%)} & \emph{Total (\%)} \\
+  \hline
+  ACLang  &      3 &       40 &   43 \\
+ Closure  &     24 &       84 &  108 \\
+ Functor  &      5 &        8 &   13 \\
+   Jaxen  &     16 &       47 &   63 \\
+   JUnit  &      6 &       44 &   50 \\
+  \hline
+\end{tabular}
+\caption{Average analysis, test running, and analysis plus test running time
+(\emph{Total}) using \ourtool{}, as percentage of Select-All running time, for the last 40
+commits.}
+\label{tbl:averages}
+\end{table}
+
+\subsubsection{Project Differences}
+
+As can be seen by test and analysis running times each project behaves differently.
+These differences are due to a number of factors. Below are our hypothesis of some
+of the important differences between the projects.
+
+Jaxen and Closure use system-level tests where most tests exercise large parts of the whole system.
+Jaxen is an XPath library where most tests send inputs to the core XPath parser, and Closure is a
+JavaScript compiler where many tests use JavaScript code as input and the test validates the
+compiler output against an expected output. For many commits in Jaxen, and even more so in Closure,
+most of the tests needed to be run -- even after commits that only changed one source file. This is
+due to the tests using a central parsing part of the system under test which has a large set of
+transitive dependencies.
+
+JUnit and ACLang in general have tests that depend on fewer parts of the system under test, thus
+small changes are less likely to trigger many tests to be run. In these projects commits that
+changed a single file triggered a smaller percentage of the total test set.
+
+ACLang has a notable difference from JUnit in that a few small commits triggered nearly all tests to
+run. Upon inspecting a subset of such commits we saw that they were changing central utility classes
+that were used as helpers to do various simple string and collection manipulation in very many
+places throughout the code.
+
+All projects except Closure show some large changes for test running times during the commit
+history of the project. In some cases this is caused by single large refactorings as can be seen
+in JUnit, or gradual changes where more tests are introduced as seen in Jaxen and JUnit.
+ACLang and Functor show some large spikes where many tests were added during a few commits.
+The trend for ACLang, Functor, and Jaxen, seems to be an increasing test set over time.
+
+% Jesper: test körnings tid är proportionell mot antal test, vilket ovanstående text antyder men
+% vilket vi inte visar med någon graf. Kanske borde läggas till?
+
+\subsubsection{Analysis Overhead}
+
+The overhead incurred by checking file modifications, re-analyzing
+dependencies, and selecting tests, did not vary
+much based on project sizes. In fact, the analysis time per line of code
+was lower for the projects with larger code sizes.
+This is not surprising since the cost is dominated by the analysis of the modified files, i.e., the size of the commit, and not by the total size of the project.
+Table~\ref{tbl:overhead}
+shows average analysis time, in milliseconds, per thousand lines of code for each project.
+
+\begin{table}[h]
+  \centering
+\begin{tabular}{l|r|r|r|r}
+  \emph{Project} & \emph{kSLOC} & \emph{time (s)} & \emph{ms/kSLOC} & \emph{Mod/ci} \\
+  \hline
+   ACLang &  65 &   0.491 &  7 &     3.7 \\
+  Closure & 254 &   0.983 &  4 &     6.6 \\
+  Functor &  21 &   0.357 & 16 &    10.9 \\
+    Jaxen &  20 &   0.339 & 17 &     3.0 \\
+    JUnit &  26 &   0.406 & 15 &    12.5 \\
+  \hline
+\end{tabular}
+\caption{kSLOC = thousand lines of source code.
+Time (s) = average analysis time in seconds.
+ms/kSLOC = analysis time in milliseconds per thousand lines of code.
+Mod/ci = mean of the number of file modifications per measured commit
+with at least one modification.}
+\label{tbl:overhead}
+\end{table}
+
+The \ourtool{} analysis is incremental in that only modified files (including all files in the packages if files are added or deleted) are analyzed. The analysis time thus depends mostly on the size of the change rather than the size of the project. The method should therefore scale to large projects, which our measurements confirm.
+
+Although our method is very coarse-grained, and thus imprecise, it pays off
+substantially. Naturally, it will pay off more for projects that use clearly separated tests and that test different code paths in the program.
+
+\section{Related Work}
+\label{RelatedWork}
+%- Safe RTS is a well researched area (surveys), but there are few tools available (...).
+%- There are few empirical studies that report actual time saving, taking both analysis and instrumentation costs into account.
+%- Our method is program-driven. Other methods are input-driven.
+%- Our method is purely static. Other methods rely on instrumenting the tests.
+%- Some methods are intended to be safe, equivalent to running the complete test suite. Others intend to reduce test time by prioritizing tests. This is an orthogonal issue, and given that a safe RTS pays off, could be combined with prioritization.
+
+Regression Test Selection (RTS) is a well researched area, and there are several surveys of
+different methods \cite{rothermel1996analyzing, biswas2011regression, yoo2012regression}. To our
+knowledge, Extraction-Based RTS is the first safe RTS method that only relies on static analysis of
+source code, and not dynamic analysis using instrumentation of code. Early RTS methods include TestTube~\cite{chen1994testtube} and DejaVu~\cite{rothermel1997safe}, both for C. TestTube relies on running instrumented tests to associate each test with a set of coarse program units, such as function definitions and global variables. DejaVu uses a more fine-grained method, and computes a statement level control-flow graph from the system under test, and relies on running instrumented tests to associate each test case with a set of edges in the control-flow graph. Variants of these methods were later developed for Java~\cite{orso2004scaling, skoglund2007improving}.
+
+Early studies~\cite{rothermel1997safe,bible2001comparative} divided development into a \emph{preliminary} phase where data could be gathered about the initial version of the program and its tests, and a \emph{critical} phase where modified programs were regression tested. Typically, the cost for the preliminary phase has been ignored in empirical investigations~\cite{rothermel1997safe, bible2001comparative,orso2004scaling, skoglund2007improving}. However, in agile development, there are no such phases, and in our view, the time for running instrumented tests should be considered part of the overhead. It might well be the case that the time for running instrumented tests outweighs what is gained by the test selection.
+
+Despite the large amount of research on safe RTS, there are few practical tools available~\cite{gligoric2014empirical}. One recent practical tool is Ekstazi~\cite{gligoric2015practical} that performs RTS for Java. Like the previously mentioned methods, Ekstazi performs dynamic analysis by instrumenting the code. The analysis is performed at the file level, by dynamically instrumenting the bytecode, and monitoring the execution to identify accessed class files as well as files explicitly accessed from the user program. In contrast to much earlier work, their empirical studies does include the overhead for running the instrumented tests, and they report average time savings on many projects. 
+
+\subsubsection*{Discussion}
+
+In comparing Extraction-Based RTS to instrumentation-based methods, we identify the following main advantages:
+\begin{itemize}
+\item Extraction-Based RTS is safe also for non-deterministic programs. In contrast, instrumentation-based methods are safe only provided that the system under test is deterministic.
+\item The overhead for Extraction-Based RTS is very small, making it negligible in practice. This is
+  partly because the analysis is coarse-grained and incremental, and partly because it is
+  proportional to the size of the modification, which is usually small. This is important for the
+  worst-case scenario, when all or most tests are selected, such as when a central module is modified. In our experience, these scenarios are fairly common. In contrast, an instrumentation-based method will have an overhead proportional to the number of tests run, which can be substantial. For example, Ekstazi reports a couple of data points where an individual run increases from roughly 15 seconds for Select-All to roughly 27 seconds for their test selection~\cite{gligoric2015practical}.
+\item With Extraction-Based RTS, a project can be checked out and test selection can start without having to first run all tests. This can be important when running all tests takes a long time.
+\end{itemize}
+
+There are also potential disadvantages of Extraction-Based RTS. First, because the method supports
+program-driven rather than input-driven testing, it works only when the tests are structured as
+separate programs (e.g., like JUnit tests), and not when the tests are structured as separate input
+data files. Future work could address the problem of automatically converting input-driven tests to
+program-driven tests. Second, because the analysis is static and coarse-grained, sacrificing
+precision but not safety for speed, it is more conservative than dynamic and finer-grained in\-stru\-men\-ta\-tion-based methods, and will therefore select more tests. We think that depending on the structure of the code in a project, it can either be more advantageous to use Extraction-Based RTS, or more advantageous to use instrumentation-based RTS. More research is needed to investigate this in detail.
+
+Extraction-Based RTS is a safe method, with the goal of conceptually running all tests, but saving time by not having to run tests whose outcome is guaranteed to be unchanged. Even if a safe RTS algorithm pays off, it might not reduce the testing time sufficiently. Safe RTS can then be combined with unsafe RTS methods to further reduce the time used, using heuristics to select the tests deemed most important. These methods can also be combined with test prioritization which uses heuristics to run tests in some order of importance, to find failing tests faster, or to run until a fixed testing time budget has been used up. For examples of such heuristics, see, for instance, the recent survey by Yoo and Harman~\cite{yoo2012regression}, and the recent work by Elbaum, Rothermel, and Penix~\cite{elbaum2014techniques}. While many such techniques are instrumentation-based, there are also static methods that are reported to give similar performance~\cite{mei2012static}.
+
+
+
+
+
+%Firewall~\cite{white1992firewall}
+
+
+
+%PERHAPS SAY SOMETHING. BUT THEN LOOK AT JAVA EXTRACTION TOO.
+%This is in analogy to \emph{application extraction} which aims at extracting compact applications from object-oriented image-based programming environments \cite{agesen1994sifting}.
+
+%MOVED TO HERE FROM INTRO
+
+%Many RTS algorithms have been proposed that are based on fine-grained dynamic and/or static analysis \cite{BiswahInformatica2011, blabla}. Although a finer-grained algorithm might give higher precision, i.e., avoid selecting tests whose results are unchanged, there is a risk that the selection takes so long to run that it does not make up for the time saved in reducing the testing time.
+
+%While safe RTS is a well researched area, there are only few practical tools available~\cite{gligoric2014empirical}. Empirical results that report actual time savings are very scarce, but includes the early tool DejaVoo~\cite{orso2004scaling}, and the recent work on the tool~Ekstazi \cite{gligoric2015ekstazi, gligoric2015practical}. 
+
+% there are only a few practical tools available, see for example the recent comparison study \cite{gligoric2014empirical}.
+%We are aware of even fewer empirical results that measure actual time savings, notably \cite{orso2004scaling, gligoric2015ekstazi}.
+ 
+%Even if a safe RTS algorithm pays off,
+%%It can pay off even if it does not hit an optimal balance.
+%%and hits the optimal balance of speed/precision,
+%it might not reduce the testing time sufficiently.
+%%Rephrased a bit. Unsafe does not imply that a time budget is used.
+
+
+%OLD RELATED WORK TEXT
+
+%There are many published methods for regression test selection, see, e.g., the following surveys~\cite{biswas2011regression, rothermel1996analyzing}. In common for all methods we have found is that they rely on running instrumented tests, which has a high overhead compared to our purely static analysis. Actual measurements of time savings using RTS methods are extremely scarce in the literature, which is surprising, since time savings is the goal of RTS.
+
+%\subsubsection*{TestTube}
+%One of the earliest implemented methods was Chen, Rosenblum, and Vo's method \emph{TestTube}~\cite{chen1994testtube} for C. Here, the C code was first statically analyzed to compute a database of \emph{code entities}, such as functions and variables. Then all tests were instrumented and run to find out what code entities were touched by each test. After a code modification, the affected tests could then be identified using this information, and rerun, again instrumented to find out their new set of touched code entities. They report on the number of tests needed to rerun after different changes to an example library, but they do not give any data on the time saved.
+
+%Chen et al. identify a shortcoming of TestTube, namely that it does not handle non-deterministic code, where the set of touched entities may differ between different runs. They outline a method very similar to what we suggest, namely to statically find the closure of all elements referenced, starting from the \texttt{main} program. However, as the same \texttt{main} program would typically be run with different test input data for different test cases, this would not help in differing between such test cases. As a tentative solution, they suggest instrumenting each test to find what non-main functions are called, and do a static closure analysis from each such function. However, it does not seem that these ideas were followed up on, and indeed, following that approach would again lead to having to run instrumented tests.
+
+%\subsubsection*{Firewall approaches}
+%The \emph{firewall} approach was proposed by White and Abdullah~\cite{white1992firewall}. Here, a module call graph was to be computed statically, and instrumented tests run to see which modules were touched by each test. After a code change, the set of affected tests would then be computed. 
+
+%Orso, Shi, and Harrold describe an empirical evaluation of a two-phase test selection technique and tool, \emph{DejaVOO}, applied to Java subject programs \cite{orso2004scaling}. The technique uses a coarse class-based analysis to find a preliminary set of affected classes after a change, similar to the firewall technique. After a modification, they identify the files affected according to the class-based analysis, and perform a finer-grained control-flow analysis on these files. By previously having run instrumented tests, they identify which tests need to be rerun after the modification. They ran their tool on five commits for each of three different subject programs, reporting average running times of 81\%, 64\%, and 37\% as compared to running all tests. However, they did not include the time for identifying changed files, or the time for running instrumented tests in their measurements. It is therefore unclear if the approach actually payed off.
+%%Skoglund and Runeson later observed that it is not necessary to use a firewall, but that running instrumented tests is sufficient \cite{skoglund2007improving}.
+%Skoglund and Runeson observed later that the call graph was not really needed, and that it was sufficient to run the instrumented tests to see which modules they touched~\cite{skoglund2007improving}. Skoglund reports on test suite reduction rates using RTS, but does not report any actual time savings.
+
+%Using instrumented tests only, and not using any call graph or data flow analysis of the code, is in fact equivalent to the original TestTube method, equating code entities with modules rather than with variables and functions. 
+%%TODO: Add ref to their 2005 paper.
+
+
+
+
+
+% It automatically runs tests whenever
+%code affecting any test is edited. To find which changes affect a test Infinitest analyzes bytecode to find dependencies
+%between Java classes. The analysis is very simple: any use of another class name in the
+%bytecode results in a dependency. Changes are detected by storing a hash sum for each (bytecode) class file.
+%Analysing bytecode has some advantages over analysing source code:
+
+%\begin{itemize}
+%  \item Bytecode is simpler to parse than the corresponding source code.
+%  \item All class names are fully qualified in bytecode -- type lookup is not needed.
+%  \item Bytecode is resilient to some source code changes such as comment edits or new blank lines.
+%\end{itemize}
+
+%Infinitest checks the generated class files for changes. This method is more
+%resilient to non-functional changes than checking to see if the source files
+%were modified (comment edits or new blank lines will not alter the generated
+%bytecode).
+
+%The drawbacks of analysing bytecode is that it requires compiling the source code before analysis.
+%By analysing source code it is possible to avoid compilation after changes that do not affect any tests.
+
+%Infinitest does not store its dependency graph database so each time the editor is restarted all tests must be re-run.
+
+
+%\subsubsection*{Ekstazi} Ekstazi is a recent test selection tool for Java, implemented by Gligoric et al.~\cite{gligoric2015ekstazi, gligoric2015practical}. It is a mature tool and works as a replacement for junit.jar, which makes it easy to use, and it is actively used in several open source projects. The analysis is performed at the file level, by dynamically instrumenting the bytecode, and monitoring the execution to identify accessed class files as well as files explicitly accessed from the user program. Ekstazi computes checksums for the accessed files to identify which files have changed. The tool has been benchmarked on a large number of open source repositories. Their reported figures are similar to ours. The average savings vary substantially between projects, but they save the most on larger projects. For the 16 projects where running all tests takes more than one minute, they get an average running time of 46\% as compared to run all tests. This is very similar to our average running times of 47\%, 44\%, and 40\% on the three projects we measured initially. However, Ekstazi have measured the complete build time, whereas we measured only the test and RTS overhead time, so in doing a fair comparison, the Ekstazi figures should be better on average. To get a clearer picture of the differences, we picked three of their projects and measured the same commits, as explained in Section~\ref{Evaluation}. The results are not completely comparable, since we include only javac compilation in those figures, rather than the complete build. However, it is interesting to see that our figures are both better and worse, depending on the project, even though we always select more tests. Our conclusion is that the results are very project dependent, and depending on the actual changes done.
+
+%An interesting thing to compare is the time for the RTS overhead. Our overhead is in general very small, as can be seen from the grey bars in figures in Section~\ref{Evaluation}. This is because our overhead depends on the size of the change, rather than the size of the project or the number of tests selected. This means that if a single RTS run selects all or many of the tests, for example because a core file has been changed, the penalty is not very high, and just a fraction of the time it takes to run all tests. In contrast, for a test-instrumenting method, like Ekstazi, the overhead depends on the number of tests selected. If all tests are selected, the penalty can be quite high. This is again very project dependent, but Ekstazi reports an overhead of around 8X for one project.
+
+%Similar to our method, Ekstazi is based on a coarse-grained file-based analysis. In contrast to our method, which performs a static analysis of the code, Ekstazi is based on a dynamic analysis performed during running test cases. The analysis is performed by instrumenting the bytecode, and monitoring the execution to identify accessed class files as well as files explicitly accessed from the user program. Ekstazi computes checksums for the accessed files to identify which files have changed. Since the analysis in Ekstazi is done on the running test programs, it might, in contrast to our method, be unsafe for non-deterministic programs. On the other hand it should be more precise for deterministic programs, but might have a higher analysis overhead. Ekstazi has been benchmarked on a large number of Open Source repositories, reporting an average running time of 68\% as compared to 100\% for running all tests over the last 80 commits. This includes the time to collect information to update the dependency graph. By postponing the collection phase, their average running time goes down to 53\%.
+
+%\subsubsection*{Discussion}
+%In comparing with the above methods, we conclude that they all depend on running instrumented tests. One consequence of this is that they cannot handle non-determinism. In contrast, our method does find all code that could be touched by any run, and is therefore safe also for non-deterministic programs. Another consequence of using instrumented tests is that the overhead is high, and dependent on the number of tests run. In contrast, our method has a very low overhead, and the overhead is dependent on the size of the modification, rather than on the project size or the number of tests run. This means our method can be used without incurring any great penalty in the cases when many tests are selected. Furthermore, our results are similar to those of Ekstazi, although our method is more conservative, and selects more tests.
+
+
+
+%For our three subject projects, we got an average running time of 47\%, 44\%, and 40\%, including the time to collect information for doing the next test selection. Note that our figures only include commits where source files were actually changed. If we would include also other commits, e.g., where just documentation was changed, our figures would be even lower. However, since we ran different subject programs than in the Ekstazi and the DejaVOO studies, further studies would be needed to make a direct comparison between the methods.
+
+%\subsubsection*{Infinitest} Infinitest is an Open Source plugin for Eclipse and IntelliJ, implementing continuous testing, i.e., it runs all affected tests automatically whenever the user has modified code. We have not found any technical documentation of Infinitest, explaining the test method used, so we have investigated its implementation. Infinitest uses an RTS method based on analyzing the bytecode, maintaining dependencies between class files. The analysis is similar to our method, but regards any use of another class name in the bytecode as a dependency, and is thus less precise than our method in this respect. On the other hand, Infinitest may be more precise than our method in that bytecode is resilient to some source code changes such as comment edits or new blank lines. 
+
+%Infinitest detects changes by storing a hash sum for each class file. This might be more expensive than our change detection which is just based on time stamps, in particular if it would be integrated with a non-incremental compiler outside Eclipse.
+%Infinitest does not store its dependency graph database on disk, so each time the Eclipse or IntelliJ editor is restarted, all bytecode has to be analyzed and all tests re-run after the next change.
+%Although Infinitest uses a similar RTS algorithm we did not measure Infinitest performance
+%since it is not designed to be used as a standalone tool. We were therefore not able to easily modify Infinitest
+%to run in our benchmark suite and log the relevant statistics.
+
+
+
+
+%\subsubsection*{TestTube}
+%AFTER A QUICK BROWSE, I COULDN'T FIND FIGURES ON HOW MUCH TIME THEY SAVE.
+
+%\subsubsection*{DejaVOO} Orso, Shi, and Harrold describe an empirical evaluation of a two-phase RTS technique\cite{orso2004scaling}. This technique uses a coarse class-based analysis to find a preliminary set of affected classes after a change, and then performs a finer-grained control-flow analysis on files affected by changes. They   
+
+%\subsubsection*{Skoglund NoFirewall}
+
+
+% Paper by Elbaum Rothermel, Penix, 2014
+% Blog post about test selection, see reference in Ekstazi paper
+
+\section{Conclusion}
+\label{Conclusion}
+
+%Fits program-driven testing, but only for unit, subsystem and integration tests. But not for testing the complete system, or systems where all tests go through multiplexing code, like a parser or an event loop, and not for reflection.
+We have presented Extraction-Based RTS, a new safe regression test selection method, suited for program-driven testing, i.e., where tests are formulated as code, using a framework like JUnit. In contrast to other safe RTS methods, it is based on static analysis rather than dynamic in\-stru\-men\-ta\-tion-based analysis. This, in combination with a coarse-grained incremental analysis, gives a low overhead, which is dominated by the size of the change rather than by the number of tests selected. The overhead consists of the time for scanning changed files, selecting tests to run, and updating the dependency graph. A low overhead is important in the rather common situation when all tests are selected, like when changing a key class, since the penalty for using the method then is low. For our subject programs, ranging from 20-254 kLOC, the overhead was typically less than half a second, corresponding to a small fraction of the time for running all tests, and thus negligible from a practical point of view.
+
+%The method is coarse-grained and the overhead is low, and is dominated by the size of the change rather than the size of the complete project, or the number of tests selected. The overhead includes time for scanning changed files, selecting tests to run, and updating the dependency graph. For our subject programs, ranging from 20-254 kLOC, the overhead was typically less than half a second, corresponding to a small fraction of the time for running the selected tests. Thus
+
+%The overhead includes time for scanning changed files, selecting tests to run, and updating the dependency graph. 
+
+%In measuring the overhead, including time for scanning changed files, analyzing files, and updating the dependency graph,
+%For our three subject benchmark programs, 
+%the overhead was on average 17\%, 6\%, and 3\% of the time for running all tests. In the worst case, our method thus slows down the execution by the above amount, namely in the case that all tests are selected.
+ 
+On the average, the method pays off well, though it did not not pay off for one
+out of five benchmarked programs, in which case the extra testing time was
+around 8\% higher. For subject programs where our method payed off, the
+average running time, including overhead, ranged between 13-63\% of the time
+for running all tests.  We could also see that the average payoff changes
+during the development of a program. For a couple of the subjects, the method
+did not pay off initially, but did so when the project started to grow. Since
+we measured individual commits, which often consist of multiple individual
+changes, the payoff would be even larger during development if tests are run
+for smaller intermediate changes.
+
+% JESPER'S NUMBERS:
+% Program subject
+% Average time as compared to run all, for the last 80 commits
+% Average overhead time, for the last 80 commits
+%[1] "Jaxen"
+%[1] 0.4696094
+%[1] 0.1684976
+%[1] "JUnit"
+%[1] 0.4357609
+%[1] 0.0632435
+%[1] "ACLang"
+%[1] 0.3993209
+%[1] 0.03010102
+
+%Safe also for nondeterministic programs.
+In comparison to dynamic methods that are based on code instrumentation, our method is safe also for non-deterministic programs that do not necessarily take the same path in each run.
+%While selecting more tests, our resulting savings are in a similar range, and has a lower overhead penalty when all tests are selected.
+
+%Furthermore, our method does not require the tests to be run first, in order to start using the method.
+
+%Say something about the key to the fast analysis is to only include the EINS constructs (Extends, Implements, New, Static)
+
+%Say something that we might try the method on bytecode analysis instead.
+
+It is important to note that Extraction-Based RTS works for program-driven tests rather than for input-driven tests. An interesting avenue for further research would be to develop methods for generating program-driven tests from input-driven tests, thereby making the method applicable also in these cases. It would also be interesting to combine the method with unsafe RTS methods to be able to skip tests also in that setting.
+
+%When a new test is added, only that test will be run.
+
+%By checking in the dependency graph, it is not necessary to run the whole test suite before starting to test.
+
+
+\section*{Acknowledgments}
+We thank the anonymous reviewers. This work was partly financed by the Swedish Research Council under grant 621-2012-4727.
+
+{\raggedright
+\printbibliography[segment=\therefsegment,heading=subbibliography]
+}
+
+}
