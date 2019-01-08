@@ -3,6 +3,9 @@
 This repository contains the TeX sources for my thesis.
 The sources should be compiled with XeLaTeX and Biber.
 
+URL to the PDF of the published thesis:
+[http://portal.research.lu.se/portal/files/55469024/thesis_joqvist_final.pdf](http://portal.research.lu.se/portal/files/55469024/thesis_joqvist_final.pdf)
+
 I have made a few minor revisions since the published version of the thesis.
 The version number in the frontmatter reflects the current version of the
 thesis.  The bugs listed in the errata have been corrected in this revised
