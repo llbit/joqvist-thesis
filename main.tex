@@ -108,7 +108,9 @@ decorations.pathmorphing % snakes
 }
 
 % Inline verbatim in multiplicities:
-\def\inline{\lstinline[basicstyle=\sffamily,keywordstyle={}]}
+% columns=fullflexible to fix spacing around inline code
+% https://tex.stackexchange.com/questions/115542/ugly-spacing-in-lstinline
+\def\inline{\lstinline[columns=fullflexible,basicstyle=\sffamily,keywordstyle={}]}
 
 \usepackage[backend=biber,
 maxcitenames=2,
