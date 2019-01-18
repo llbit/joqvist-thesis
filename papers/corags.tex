@@ -331,7 +331,7 @@ For higher-order attributes we add the following soundness requirement:
 \end{description}
 
 The last requirement for \textsc{Eval} to be correct is that it is wait-free.
-We will require that \textsc{Compute}, \textsc{Memoized}, \textsc{Store}, and \textsc{Value}
+We will require that \textsc{Compute}, \textsc{Memoized}, \textsc{Store}, and \textsc{Load}
 are wait-free, to ensure that \textsc{Eval} is wait-free (when evaluating non-circular attributes).
 
 \begin{theorem}[Eval Wait-Free]
@@ -350,7 +350,7 @@ are wait-free, to ensure that \textsc{Eval} is wait-free (when evaluating non-ci
 \end{proof}
 
 In the following sections we discuss implementations of \textsc{Compute},
-\textsc{Memoized}, \textsc{Store}, and \textsc{Value}.
+\textsc{Memoized}, \textsc{Store}, and \textsc{Load}.
 The procedures are implemented by Java methods and fields declared on the AST node class that
 the corresponding attribute is declared on.
 The attribute instance is not explicitly
